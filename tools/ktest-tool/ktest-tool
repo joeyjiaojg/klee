@@ -12,6 +12,7 @@
 
 import binascii
 import io
+import os
 import string
 import struct
 import sys
@@ -124,6 +125,12 @@ class KTest:
             f.write(blob)
             f.close()
 
+def makeOutputFilename(outputDir, filename, newExt):
+    result = os.path.join(outputDir, os.path.basename(filename) + newExt);
+    if os.path.exists(result):
+        print("ERROR: file %s already exists" % (result))
+        sys.exit(1)
+    return result
 
 
 def main():
@@ -167,10 +174,78 @@ def main():
     ap = ArgumentParser(prog='ktest-tool', formatter_class=RawDescriptionHelpFormatter, epilog=dedent(epilog))
     ap.add_argument('--trim-zeros', help='trim trailing zeros', action='store_true')
     ap.add_argument('--extract', help='write binary value of object into file', metavar='name', nargs=1, action='append')
+    ap.add_argument('--libfuzzer', dest='libFuzzer', action='store_true', default=False, help='output in libFuzzer format')
+    ap.add_argument('--to-ktest', dest='toKTest', action='store_true', default=False, help='convert binary file to KTest format')
+    ap.add_argument('--output-dir', dest='outputDir', action='store', type=str, default='', help='specify output directory')
+    ap.add_argument('--posix-runtime', dest='posixRuntime', action='store_true', default=False, help='specify output directory')
     ap.add_argument('files', help='a .ktest file', metavar='file', nargs='+')
     args = ap.parse_args()
 
+    if args.toKTest or args.libFuzzer:
+        if args.outputDir != '':
+            outputDir = opts.outputDir
+        else:
+            if args.toKTest:
+                outputDir = 'ktest_files'
+            if args.libFuzzer:
+                outputDir = 'fuzz_files'
+        if outputDir != '' and not os.path.exists(outputDir):
+            os.makedirs(outputDir)
+        print ('Output directory: %s' % outputDir)
+
     for file in args.files:
+
+        if args.toKTest:
+            print('to-ktest file : %r' % file)
+            bytes = open(file,'rb').read()
+            print('size %4d: data: %r' % (len(bytes), bytes))
+
+            f = open(makeOutputFilename(outputDir, file, ".ktest"), 'wb')
+
+            f.write(b'KTEST')
+            f.write(struct.pack('>i', 0)) # version
+            f.write(struct.pack('>i', 1)) # numArgs
+            f.write(struct.pack('>i', 9))
+            f.write(b'dummy_arg') # dummy_arg
+            if args.posixRuntime:
+                f.write(struct.pack('>i', 3)) # numObjects
+
+                f.write(struct.pack('>i', 13))
+                f.write(b'model_version') # model_version name
+                f.write(struct.pack('>i', 4))
+                f.write(struct.pack('>i', 0x01000000))
+            else:
+                f.write(struct.pack('>i', 2)) # numObjects
+
+            f.write(struct.pack('>i', 4))
+            f.write(b'data') # data name
+            f.write(struct.pack('>i', len(bytes)))
+            f.write(bytes) # data value
+
+            f.write(struct.pack('>i', 4))
+            f.write(b'size') # size name
+            f.write(struct.pack('>i', 8))
+            f.write(struct.pack('Q', len(bytes))) # size value
+            f.close()
+            continue
+
+        b = KTest.fromfile(file)
+
+        if args.libFuzzer:
+            print('ktest file : %r' % file)
+            f_size_str = [data for (name,data) in b.objects if name == "size"][0]
+            f_data_str = [data for (name,data) in b.objects if name == "data"][0]
+            f_size = struct.unpack('Q', f_size_str)[0]
+            f_data = f_data_str[:f_size]
+            print('size: %d' % f_size)
+            print('data: %r' % f_data)
+
+            f = open(makeOutputFilename(outputDir, file, ".fuzz"), 'wb')
+            f.write(f_data)
+            f.close()
+
+            continue
+
         ktest = KTest.fromfile(file)
         if args.extract:
             ktest.extract({x for xs in args.extract for x in xs}, args.trim_zeros)
